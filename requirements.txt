@@ -1,3 +1,4 @@
 python-telegram-bot==21.4
 openai==1.43.0
 aiofiles==24.1.0
+python-dotenv==1.0.1
