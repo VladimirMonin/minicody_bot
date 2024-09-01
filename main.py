@@ -14,7 +14,7 @@ from typing import Dict, List
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 from openai import AsyncOpenAI
-
+from telegram.constants import ParseMode
 from settings import ALLOWED_CHATS, MAX_MESSAGES_PER_DAY, CONTEXT_EXPIRATION_MINUTES, CONTEXT_MESSAGE_LIMIT, JSON_LOG_FILE, OPEN_AI_API_KEY, BOT_TOKEN
 
 # Настройка логгера
@@ -109,11 +109,11 @@ async def handle_message(update: Update, context) -> None:
                 *[{"role": "user", "content": msg["message"]} for msg in context_messages],
                 {"role": "user", "content": message_text}
             ],
-            model="gpt-4"
+            model="gpt-4o-mini"
         )
 
-        reply_text = response["choices"][0]["message"]["content"]
-        await update.message.reply_text(reply_text)
+        reply_text = response.choices[0].message.content
+        await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN)
         logger.info(f"Отправлен ответ пользователю {user_id}: {reply_text}")
     except Exception as e:
         logger.exception(f"Ошибка при обработке сообщения: {e}")
