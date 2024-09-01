@@ -29,6 +29,21 @@ message_counters: Dict[int, Dict[int, int]] = {}
 # Инициализация клиента OpenAI
 openai_client = AsyncOpenAI(api_key=OPEN_AI_API_KEY)
 
+async def update_bot_context(chat_id: int, user_id: int, message: str) -> None:
+    """Обновляет контекст пользователя новым сообщением бота."""
+    timestamp = time.time()
+    if chat_id not in chat_logs:
+        chat_logs[chat_id] = {}
+    if user_id not in chat_logs[chat_id]:
+        chat_logs[chat_id][user_id] = []
+    chat_logs[chat_id][user_id].append({
+        "timestamp": timestamp,
+        "message": message,
+        "human_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "role": "assistant"
+    })
+    await save_chat_logs()
+
 async def load_chat_logs() -> None:
     """Загружает логи общения из JSON файла."""
     global chat_logs
@@ -45,7 +60,7 @@ async def save_chat_logs() -> None:
         json.dump(chat_logs, file, indent=4, ensure_ascii=False)
 
 async def get_user_context(chat_id: int, user_id: int) -> List[Dict[str, str]]:
-    """Возвращает контекст последних сообщений пользователя, если они не устарели."""
+    """Возвращает контекст последних сообщений пользователя и ответов бота, если они не устарели."""
     if chat_id in chat_logs and user_id in chat_logs[chat_id]:
         context = []
         for msg in chat_logs[chat_id][user_id][-CONTEXT_MESSAGE_LIMIT:]:
@@ -66,8 +81,6 @@ async def update_user_context(chat_id: int, user_id: int, message: str) -> None:
         "message": message,
         "human_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
-    if len(chat_logs[chat_id][user_id]) > CONTEXT_MESSAGE_LIMIT:
-        chat_logs[chat_id][user_id].pop(0)
     await save_chat_logs()
 
 async def log_message(chat_id: int, user_id: int, message: str) -> None:
@@ -80,6 +93,7 @@ async def log_message(chat_id: int, user_id: int, message: str) -> None:
 
     if message_counters[chat_id][user_id] <= MAX_MESSAGES_PER_DAY:
         await update_user_context(chat_id, user_id, message)
+
 
 async def handle_message(update: Update, context) -> None:
     """Обрабатывает входящие сообщения от пользователей."""
@@ -100,16 +114,26 @@ async def handle_message(update: Update, context) -> None:
             logger.info(f"Сообщение из личного чата: {chat_id}")
             return  # Игнорируем сообщения из личных чатов
 
-        # Проверяем, было ли сообщение адресовано боту
-        bot_username = context.bot.username
         message_text = update.message.text
-        logger.info(f"Текст сообщения: {message_text}")
-        if not message_text.startswith(f"@{bot_username}"):
-            logger.info(f"Сообщение не адресовано боту: {message_text}")
-            return
+        reply_to_message = update.message.reply_to_message
 
-        # Удаляем упоминание бота из текста сообщения
-        message_text = message_text.replace(f"@{bot_username}", "").strip()
+        if reply_to_message and reply_to_message.from_user.is_bot:
+            # Если сообщение является ответом на сообщение бота
+            quoted_text = reply_to_message.text
+            if message_text.startswith(quoted_text):
+                # Если цитируется все сообщение бота
+                message_text = message_text[len(quoted_text):].strip()
+            else:
+                # Если цитируется только часть сообщения бота
+                message_text = message_text.strip()
+                quoted_text = message_text
+        else:
+            # Если сообщение не является ответом на сообщение бота
+            bot_username = context.bot.username
+            if not message_text.startswith(f"@{bot_username}"):
+                logger.info(f"Сообщение не адресовано боту: {message_text}")
+                return
+            message_text = message_text.replace(f"@{bot_username}", "").strip()
 
         logger.info(f"Обработка сообщения: {message_text}")
 
@@ -126,20 +150,18 @@ async def handle_message(update: Update, context) -> None:
         response = await openai_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": "Ты бот-поддержки, помогай студентам, но не давай готовые решения."},
-                *[{"role": "user", "content": msg["message"]} for msg in context_messages],
-                {"role": "user", "content": message_text}
+                *[{"role": msg.get("role", "user"), "content": msg["message"]} for msg in context_messages],
+                {"role": "user", "content": quoted_text if reply_to_message else message_text}
             ],
             model="gpt-4o-mini"
         )
 
         reply_text = response.choices[0].message.content
         await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN)
+        await update_bot_context(chat_id, user_id, reply_text)  # Сохраняем ответ бота в контекст
         logger.info(f"Отправлен ответ пользователю {user_id}: {reply_text}")
     except Exception as e:
         logger.exception(f"Ошибка при обработке сообщения: {e}")
-
-
-
 
 
 
