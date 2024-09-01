@@ -16,7 +16,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 from openai import AsyncOpenAI
 from telegram.constants import ParseMode
-from settings import ALLOWED_CHATS, MAX_MESSAGES_PER_DAY, CONTEXT_EXPIRATION_MINUTES, CONTEXT_MESSAGE_LIMIT, JSON_LOG_FILE, OPEN_AI_API_KEY, BOT_TOKEN
+from settings import ALLOWED_CHATS, MAX_MESSAGES_PER_DAY, CONTEXT_EXPIRATION_MINUTES, CONTEXT_MESSAGE_LIMIT, JSON_LOG_FILE, OPEN_AI_API_KEY, BOT_TOKEN, BOT_ROLE
 
 # Настройка логгера
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -114,9 +114,14 @@ async def handle_message(update: Update, context) -> None:
             logger.info(f"Сообщение из личного чата: {chat_id}")
             return  # Игнорируем сообщения из личных чатов
 
+        # Проверяем, является ли пользователь администратором группы
+        user_status = (await update.effective_chat.get_member(user_id)).status
+        is_admin = user_status in ["creator", "administrator"]
+
         message_text = update.message.text
         reply_to_message = update.message.reply_to_message
 
+        quoted_text = None
         if reply_to_message and reply_to_message.from_user.is_bot:
             # Если сообщение является ответом на сообщение бота
             quoted_text = reply_to_message.text
@@ -137,7 +142,7 @@ async def handle_message(update: Update, context) -> None:
 
         logger.info(f"Обработка сообщения: {message_text}")
 
-        if message_counters.get(chat_id, {}).get(user_id, 0) > MAX_MESSAGES_PER_DAY:
+        if not is_admin and message_counters.get(chat_id, {}).get(user_id, 0) > MAX_MESSAGES_PER_DAY:
             await update.message.reply_text("Вы превысили лимит сообщений на сегодня.")
             logger.info(f"Превышен лимит сообщений для пользователя: {user_id}")
             return
@@ -149,9 +154,9 @@ async def handle_message(update: Update, context) -> None:
         # Запрос к OpenAI API
         response = await openai_client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "Ты бот-поддержки, помогай студентам, но не давай готовые решения."},
+                {"role": "system", "content": BOT_ROLE},
                 *[{"role": msg.get("role", "user"), "content": msg["message"]} for msg in context_messages],
-                {"role": "user", "content": quoted_text if reply_to_message else message_text}
+                {"role": "user", "content": quoted_text if quoted_text else message_text}
             ],
             model="gpt-4o-mini"
         )
@@ -162,6 +167,7 @@ async def handle_message(update: Update, context) -> None:
         logger.info(f"Отправлен ответ пользователю {user_id}: {reply_text}")
     except Exception as e:
         logger.exception(f"Ошибка при обработке сообщения: {e}")
+
 
 
 
