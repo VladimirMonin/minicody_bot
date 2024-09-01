@@ -1,5 +1,6 @@
 """
 Модуль Telegram-бота для поддержки студентов в группах.
+Бота можно добавить в телеграмм чаты, где студенты, смогут обращатся к нему по нику, получая ответы на свои вопросы.
 Бот поддерживает асинхронную работу, ограничивает количество обращений студентов в сутки и обращений к OpenAI API.
 Контекст общения сохраняется в JSON формате.
 Модуль использует принципы единой ответственности (SRP) и избегает повторений кода (DRY).
@@ -86,17 +87,36 @@ async def handle_message(update: Update, context) -> None:
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
 
+        logger.info(f"Получено сообщение из чата {chat_id} от пользователя {user_id}")
+
         if chat_id not in ALLOWED_CHATS:
             logger.info(f"Сообщение из неразрешенного чата: {chat_id}")
             return  # Игнорируем сообщения из неразрешенных чатов
+
+        # Проверяем, является ли чат групповым
+        chat_type = update.effective_chat.type
+        logger.info(f"Тип чата: {chat_type}")
+        if chat_type == "private":
+            logger.info(f"Сообщение из личного чата: {chat_id}")
+            return  # Игнорируем сообщения из личных чатов
+
+        # Проверяем, было ли сообщение адресовано боту
+        bot_username = context.bot.username
+        message_text = update.message.text
+        logger.info(f"Текст сообщения: {message_text}")
+        if not message_text.startswith(f"@{bot_username}"):
+            logger.info(f"Сообщение не адресовано боту: {message_text}")
+            return
+
+        # Удаляем упоминание бота из текста сообщения
+        message_text = message_text.replace(f"@{bot_username}", "").strip()
+
+        logger.info(f"Обработка сообщения: {message_text}")
 
         if message_counters.get(chat_id, {}).get(user_id, 0) > MAX_MESSAGES_PER_DAY:
             await update.message.reply_text("Вы превысили лимит сообщений на сегодня.")
             logger.info(f"Превышен лимит сообщений для пользователя: {user_id}")
             return
-
-        message_text = update.message.text
-        logger.info(f"Получено сообщение от пользователя {user_id}: {message_text}")
 
         # Обновляем и получаем контекст
         await log_message(chat_id, user_id, message_text)
@@ -117,6 +137,10 @@ async def handle_message(update: Update, context) -> None:
         logger.info(f"Отправлен ответ пользователю {user_id}: {reply_text}")
     except Exception as e:
         logger.exception(f"Ошибка при обработке сообщения: {e}")
+
+
+
+
 
 
 async def main() -> None:
