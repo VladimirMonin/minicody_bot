@@ -122,18 +122,30 @@ async def handle_message(update: Update, context) -> None:
         reply_to_message = update.message.reply_to_message
 
         quoted_text = None
-        if reply_to_message and reply_to_message.from_user.is_bot:
-            # Если сообщение является ответом на сообщение бота
-            quoted_text = reply_to_message.text
-            if message_text.startswith(quoted_text):
-                # Если цитируется все сообщение бота
-                message_text = message_text[len(quoted_text):].strip()
+        if reply_to_message:
+            if reply_to_message.from_user.is_bot:
+                # Если сообщение является ответом на сообщение бота
+                quoted_text = reply_to_message.text
+                if message_text.startswith(quoted_text):
+                    # Если цитируется все сообщение бота
+                    message_text = message_text[len(quoted_text):].strip()
+                else:
+                    # Если цитируется только часть сообщения бота
+                    message_text = message_text.strip()
+                    quoted_text = message_text
             else:
-                # Если цитируется только часть сообщения бота
-                message_text = message_text.strip()
-                quoted_text = message_text
+                # Если сообщение является ответом на сообщение другого студента
+                bot_username = context.bot.username
+                if f"@{bot_username}" in message_text:
+                    # Если в сообщении есть упоминание бота
+                    quoted_text = reply_to_message.text
+                    message_text = message_text.replace(f"@{bot_username}", "").strip()
+                else:
+                    # Если упоминания бота нет, игнорируем сообщение
+                    logger.info(f"Сообщение не адресовано боту: {message_text}")
+                    return
         else:
-            # Если сообщение не является ответом на сообщение бота
+            # Если сообщение не является ответом на другое сообщение
             bot_username = context.bot.username
             if not message_text.startswith(f"@{bot_username}"):
                 logger.info(f"Сообщение не адресовано боту: {message_text}")
@@ -167,6 +179,7 @@ async def handle_message(update: Update, context) -> None:
         logger.info(f"Отправлен ответ пользователю {user_id}: {reply_text}")
     except Exception as e:
         logger.exception(f"Ошибка при обработке сообщения: {e}")
+
 
 
 
