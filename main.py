@@ -118,8 +118,14 @@ async def handle_message(update: Update, context) -> None:
         user_status = (await update.effective_chat.get_member(user_id)).status
         is_admin = user_status in ["creator", "administrator"]
 
+        # Проверяем наличие текста в сообщении
+        if update.message.text is None:
+            logger.info(f"Сообщение не содержит текста: {update.message}")
+            return
+
         message_text = update.message.text
         reply_to_message = update.message.reply_to_message
+        bot_username = context.bot.username
 
         quoted_text = None
         if reply_to_message:
@@ -134,19 +140,17 @@ async def handle_message(update: Update, context) -> None:
                     message_text = message_text.strip()
                     quoted_text = message_text
             else:
-                # Если сообщение является ответом на сообщение другого студента
-                bot_username = context.bot.username
+                # Если сообщение является ответом на сообщение другого пользователя
                 if f"@{bot_username}" in message_text:
-                    # Если в сообщении есть упоминание бота
+                    # Если бот упомянут в сообщении
                     quoted_text = reply_to_message.text
                     message_text = message_text.replace(f"@{bot_username}", "").strip()
                 else:
-                    # Если упоминания бота нет, игнорируем сообщение
-                    logger.info(f"Сообщение не адресовано боту: {message_text}")
+                    # Если бот не упомянут, игнорируем сообщение
+                    logger.info(f"Сообщение является ответом на сообщение другого пользователя без упоминания бота: {message_text}")
                     return
         else:
             # Если сообщение не является ответом на другое сообщение
-            bot_username = context.bot.username
             if not message_text.startswith(f"@{bot_username}"):
                 logger.info(f"Сообщение не адресовано боту: {message_text}")
                 return
@@ -174,12 +178,17 @@ async def handle_message(update: Update, context) -> None:
         )
 
         reply_text = response.choices[0].message.content
-        await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN)
+
+        # Разбиваем длинный ответ на несколько сообщений
+        max_length = 4096
+        reply_chunks = [reply_text[i:i+max_length] for i in range(0, len(reply_text), max_length)]
+        for chunk in reply_chunks:
+            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+
         await update_bot_context(chat_id, user_id, reply_text)  # Сохраняем ответ бота в контекст
         logger.info(f"Отправлен ответ пользователю {user_id}: {reply_text}")
     except Exception as e:
         logger.exception(f"Ошибка при обработке сообщения: {e}")
-
 
 
 
