@@ -16,7 +16,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 from openai import AsyncOpenAI
 from telegram.constants import ParseMode
-from settings import ALLOWED_CHATS, MAX_MESSAGES_PER_DAY, CONTEXT_EXPIRATION_MINUTES, CONTEXT_MESSAGE_LIMIT, JSON_LOG_FILE, OPEN_AI_API_KEY, BOT_TOKEN, BOT_ROLE
+from settings import ALLOWED_CHATS, MAX_MESSAGES_PER_DAY, CONTEXT_EXPIRATION_MINUTES, CONTEXT_MESSAGE_LIMIT, JSON_LOG_FILE, OPEN_AI_API_KEY, BOT_TOKEN, BOT_ROLE, MODEL
 
 # Настройка логгера
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -174,7 +174,7 @@ async def handle_message(update: Update, context) -> None:
                 *[{"role": msg.get("role", "user"), "content": msg["message"]} for msg in context_messages],
                 {"role": "user", "content": quoted_text if quoted_text else message_text}
             ],
-            model="gpt-4o-mini"
+            model=MODEL
         )
 
         reply_text = response.choices[0].message.content
