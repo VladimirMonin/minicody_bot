@@ -116,14 +116,14 @@ async def is_admin(user_status: str) -> bool:
     """
     return user_status in ["creator", "administrator"]
 
-async def extract_message_text(message_text: str, reply_to_message: Optional[Update], bot_username: str) -> Tuple[Optional[str], str]:
+async def extract_message_text(message_text: str, reply_to_message: Optional[Update], bot_username: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Извлекает текст сообщения и цитируемый текст.
+    Извлекает текст сообщения и цитируемый текст, если сообщение адресовано боту.
     
     :param message_text: Текст сообщения
     :param reply_to_message: Объект сообщения, на которое отвечают
     :param bot_username: Имя пользователя бота
-    :return: Кортеж (цитируемый текст, текст сообщения)
+    :return: Кортеж (цитируемый текст, текст сообщения) или (None, None), если сообщение не адресовано боту
     """
     quoted_text = None
     if reply_to_message:
@@ -133,17 +133,17 @@ async def extract_message_text(message_text: str, reply_to_message: Optional[Upd
                 message_text = message_text[len(quoted_text):].strip()
             else:
                 message_text = message_text.strip()
-                quoted_text = message_text
         elif f"@{bot_username}" in message_text:
             quoted_text = reply_to_message.text
             message_text = message_text.replace(f"@{bot_username}", "").strip()
         else:
-            return None, message_text
+            return None, None
     else:
         if not message_text.startswith(f"@{bot_username}"):
-            return None, message_text
+            return None, None
         message_text = message_text.replace(f"@{bot_username}", "").strip()
     
+    logger.info(f"Извлечен текст сообщения: {message_text}")
     return quoted_text, message_text
 
 async def check_message_limit(chat_id: int, user_id: int, is_admin: bool) -> bool:
