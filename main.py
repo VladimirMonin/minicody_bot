@@ -190,7 +190,13 @@ async def handle_message(update: Update, context) -> None:
     except Exception as e:
         logger.exception(f"Ошибка при обработке сообщения: {e}")
 
-
+async def reset_message_counters() -> None:
+    """Сбрасывает счетчики сообщений каждые сутки."""
+    while True:
+        global message_counters
+        message_counters = {}
+        logger.info("Счетчики сообщений сброшены.")
+        await asyncio.sleep(24 * 60 * 60)  # Ждем 24 часа
 
 
 async def main() -> None:
@@ -208,13 +214,11 @@ async def main() -> None:
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
+
+        # Запуск задачи для сброса счетчиков сообщений каждые сутки
+        asyncio.create_task(reset_message_counters())
     except Exception as e:
         logger.exception(f"Ошибка при запуске бота: {e}")
-
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
 
 
 
