@@ -16,13 +16,14 @@ import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
 
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters
 from openai import AsyncOpenAI
 from telegram.constants import ParseMode
+
 
 from settings import (
     ALLOWED_CHATS,
@@ -34,6 +35,7 @@ from settings import (
     BOT_TOKEN,
     BOT_ROLE,
     MODEL,
+    BOT_USERNAME,
 )
 
 # Настройка логгера
@@ -52,6 +54,9 @@ openai_client = AsyncOpenAI(api_key=OPEN_AI_API_KEY)
 # Создание временной директории для изображений
 TEMP_IMAGE_DIR = Path("temp_images")
 TEMP_IMAGE_DIR.mkdir(exist_ok=True)
+
+# Для временного хранения изображений media_groups
+media_groups: Dict[str, List[Update]] = {}  # Добавьте эту строку
 
 
 async def encode_image(image_path: str) -> str:
@@ -143,7 +148,7 @@ async def check_message_limit(chat_id: int, user_id: int, is_admin: bool) -> boo
 
 async def prepare_content_for_api(
     message_text: str, photos: Optional[List[Any]] = None
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Path]]:
     content = [{"type": "text", "text": message_text}]
     image_paths = []
 
@@ -159,8 +164,8 @@ async def prepare_content_for_api(
                 base64_image = await encode_image(str(file_path))
                 content.append(
                     {
-                        "type": "image_url",
-                        "image_url": {
+                        "type": "image",
+                        "image_data": {
                             "url": f"data:image/jpeg;base64,{base64_image}",
                             "detail": "auto",
                         },
@@ -215,6 +220,7 @@ async def handle_message(update: Update, context) -> None:
         Has Photo: {bool(update.message.photo)}
         Caption: {update.message.caption}
         Text: {update.message.text}
+        Media Group ID: {update.message.media_group_id}
         ===========================
         """
         )
@@ -229,22 +235,57 @@ async def handle_message(update: Update, context) -> None:
         user_status = (await update.effective_chat.get_member(user_id)).status
         user_is_admin = await is_admin(user_status)
 
-        # Определяем текст сообщения (из caption если есть фото, иначе из text)
-        message_text = (
-            update.message.caption
-            if update.message.photo
-            else update.message.text or ""
-        )
-        photos = update.message.photo
+        media_group_id = update.message.media_group_id
 
-        logger.info(f"Обработка сообщения: {message_text}")
-        logger.info(f"Наличие фото: {bool(photos)}")
+        if media_group_id:
+            # Если сообщение является частью медиа-группы
+            if media_group_id not in media_groups:
+                media_groups[media_group_id] = []
 
-        if not message_text.startswith(f"@{context.bot.username}"):
-            logger.info("Сообщение не начинается с обращения к боту")
-            return
+            media_groups[media_group_id].append(update)
 
-        message_text = message_text.replace(f"@{context.bot.username}", "").strip()
+            # Ждем небольшое время, чтобы собрать все сообщения из группы
+            await asyncio.sleep(1)
+
+            # Проверяем, что мы собрали все сообщения
+            updates = media_groups.pop(media_group_id, [])
+
+            # Используем подпись первого сообщения как текст обращения
+            first_update = updates[0]
+            if (
+                not first_update.message.caption
+                or not first_update.message.caption.startswith(
+                    f"@{context.bot.username}"
+                )
+            ):
+                logger.info("Медиа-группа не содержит обращения к боту")
+                return
+
+            message_text = first_update.message.caption.replace(
+                f"@{context.bot.username}", ""
+            ).strip()
+            photos = []
+            for update in updates:
+                if update.message.photo:
+                    photos.extend(
+                        update.message.photo[-1:]
+                    )  # Добавляем фотографии с наивысшим разрешением
+
+        else:
+            # Если это не медиа-группа, обрабатываем как обычно
+            # Определяем текст сообщения (из caption если есть фото, иначе из text)
+            message_text = (
+                update.message.caption
+                if update.message.photo
+                else update.message.text or ""
+            )
+            photos = update.message.photo
+
+            if not message_text.startswith(f"@{context.bot.username}"):
+                logger.info("Сообщение не начинается с обращения к боту")
+                return
+
+            message_text = message_text.replace(f"@{context.bot.username}", "").strip()
 
         if not await check_message_limit(chat_id, user_id, user_is_admin):
             await update.message.reply_text("Вы превысили лимит сообщений на сегодня.")
@@ -276,45 +317,171 @@ async def handle_message(update: Update, context) -> None:
         logger.exception(f"Ошибка при обработке сообщения: {e}")
 
 
-async def reset_message_counters() -> None:
-    """Сбрасывает счетчики сообщений каждые сутки."""
-    while True:
-        global message_counters
-        message_counters = {}
-        logger.info("Счетчики сообщений сброшены.")
-        await asyncio.sleep(24 * 60 * 60)
+async def reset_message_counters(context) -> None:
+    """Сбрасывает счетчики сообщений."""
+    global message_counters
+    message_counters = {}
+    logger.info("Счетчики сообщений сброшены.")
 
 
-async def main() -> None:
-    """Основная функция для запуска бота."""
+async def process_user_request(
+    update: Update, context, message_text: str, photos: List[Any]
+) -> None:
     try:
-        await load_chat_logs()
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+
+        user_status = (await update.effective_chat.get_member(user_id)).status
+        user_is_admin = await is_admin(user_status)
+
+        if not await check_message_limit(chat_id, user_id, user_is_admin):
+            await update.message.reply_text("Вы превысили лимит сообщений на сегодня.")
+            return
+
+        # Подготовка контента для API
+        logger.info("Начало подготовки контента для API")
+        content, image_paths = await prepare_content_for_api(message_text, photos)
+        logger.info(f"Контент подготовлен. Изображений: {len(image_paths)}")
+
+        # Получение контекста и ответа
+        context_messages = await get_user_context(chat_id, user_id)
+        logger.info("Получен контекст пользователя")
+
+        reply_text = await get_ai_response(context_messages, content)
+        logger.info("Получен ответ от AI")
+
+        # Отправка ответа и обновление контекста
+        await send_response(update, reply_text)
+        await update_user_context(chat_id, user_id, reply_text, "assistant")
+        logger.info("Ответ отправлен и контекст обновлен")
+
+        # Очистка временных файлов
+        if image_paths:
+            await cleanup_temp_images(image_paths)
+            logger.info("Временные файлы изображений очищены")
+
+    except Exception as e:
+        logger.exception(f"Ошибка при обработке запроса пользователя: {e}")
+
+
+async def process_media_group(updates: List[Update], context) -> None:
+    try:
+        first_update = updates[0]
+        chat_id = first_update.effective_chat.id
+        user_id = first_update.effective_user.id
+
+        user_status = (await first_update.effective_chat.get_member(user_id)).status
+        user_is_admin = await is_admin(user_status)
+
+        if not await check_message_limit(chat_id, user_id, user_is_admin):
+            await first_update.message.reply_text(
+                "Вы превысили лимит сообщений на сегодня."
+            )
+            return
+
+        # Используем подпись первого сообщения как текст обращения
+        message_text = first_update.message.caption.replace(
+            f"@{context.bot.username}", ""
+        ).strip()
+
+        # Собираем все фотографии из медиагруппы
+        photos = []
+        for update in updates:
+            if update.message.photo:
+                photos.append(update.message.photo[-1])  # Наивысшее разрешение
+
+        # Передаем данные для обработки
+        await process_user_request(first_update, context, message_text, photos)
+        logger.info("Медиагруппа обработана успешно")
+    except Exception as e:
+        logger.exception(f"Ошибка при обработке медиагруппы: {e}")
+
+
+async def handle_media_group(update: Update, context) -> None:
+    try:
+        media_group_id = update.message.media_group_id
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+
+        # Инициализация списка сообщений группы
+        if "media_groups" not in context.chat_data:
+            context.chat_data["media_groups"] = {}
+
+        media_groups = context.chat_data["media_groups"]
+
+        if media_group_id not in media_groups:
+            media_groups[media_group_id] = []
+
+        media_groups[media_group_id].append(update)
+
+        # Проверяем, собраны ли все сообщения группы
+        total_messages_in_group = update.message.media_group_size
+        if len(media_groups[media_group_id]) == total_messages_in_group:
+            # Все сообщения группы собраны, начинаем обработку
+            updates = media_groups.pop(media_group_id)
+
+            # Используем подпись первого сообщения как текст обращения
+            first_update = updates[0]
+            message_text = first_update.message.caption.replace(
+                f"@{context.bot.username}", ""
+            ).strip()
+
+            # Собираем все фотографии из группы
+            photos = []
+            for msg in updates:
+                if msg.message.photo:
+                    photos.append(
+                        msg.message.photo[-1]
+                    )  # Берем фото с наивысшим разрешением
+
+            # Передаем данные для обработки
+            await process_user_request(first_update, context, message_text, photos)
+    except Exception as e:
+        logger.exception(f"Ошибка при обработке медиагруппы: {e}")
+
+
+def main():
+    try:
+        global chat_logs
+
+        try:
+            with open(JSON_LOG_FILE, "r", encoding="utf-8") as file:
+                chat_logs = json.load(file)
+        except FileNotFoundError:
+            logger.info("JSON файл с логами не найден. Создаем новый.")
+            chat_logs = {}
 
         application = Application.builder().token(BOT_TOKEN).build()
 
-        # Инициализируем бота и получаем его username
-        await application.initialize()
-        bot_username = (await application.bot.get_me()).username
-
-        # Теперь используем bot_username в фильтрах
+        # Добавляем два отдельных обработчика для большей надежности
         application.add_handler(
             MessageHandler(
-                (filters.PHOTO & filters.CaptionRegex(f"^@{bot_username}"))
-                | (filters.TEXT & filters.Regex(f"^@{bot_username}")),
+                filters.PHOTO & filters.CaptionRegex(f"^@{BOT_USERNAME}"),
+                handle_message,
+            )
+        )
+        application.add_handler(
+            MessageHandler(
+                filters.TEXT & filters.Regex(f"^@{BOT_USERNAME}"),
                 handle_message,
             )
         )
 
-        logger.info("Запуск бота...")
-        await application.start()
-        await application.updater.start_polling()
+        logger.info(
+            f"""
+        Бот настроен и запущен:
+        - Username: {BOT_USERNAME}
+        - Разрешенные чаты: {ALLOWED_CHATS}
+        - Лимит сообщений: {MAX_MESSAGES_PER_DAY}
+        - Обработчики: TEXT и PHOTO с префиксом @{BOT_USERNAME}
+        """
+        )
 
-        asyncio.create_task(reset_message_counters())
+        application.run_polling(allowed_updates=["message"])
+
     except Exception as e:
         logger.exception(f"Ошибка при запуске бота: {e}")
 
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
+    main()
