@@ -211,9 +211,6 @@ async def handle_message(update: Update, context) -> None:
         if not await is_allowed_chat(chat_id):
             return
 
-        if update.effective_chat.type == "private":
-            return
-
         user_status = (await update.effective_chat.get_member(user_id)).status
         user_is_admin = await is_admin(user_status)
 
